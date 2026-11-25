@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "问题导航栏（ChatGPT / Claude）",
   "short_name": "问题导航",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "在 ChatGPT 和 Claude 网页右侧显示当前对话的问题导航短横线，悬停预览、点击跳转。完全本地运行，不联网、不收集数据。",
   "icons": {
     "16": "icons/icon16.png",

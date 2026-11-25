@@ -443,15 +443,17 @@
   function showTipText(btn, head, body) {
     tip.querySelector('.n').textContent = head;
     tip.querySelector('.t').textContent = body;
-    tip.classList.add('show');
     const r = btn.getBoundingClientRect();
     const railR = rail.getBoundingClientRect();
-    const tw = tip.offsetWidth, th = tip.offsetHeight;
-    let left = railR.left - tw - 8;
-    if (left < 8) left = 8;
+    // 以导航栏左边缘为基准，从右往左展开：提示框右边缘固定在导航栏左侧 8px，永远不会盖住导航栏。
+    // （旧做法先量宽度再设 left，量的时候宽度会受上一次位置影响，导致提示框伸到导航栏上。）
+    tip.style.left = 'auto';
+    tip.style.right = Math.max(0, window.innerWidth - railR.left + 8) + 'px';
+    tip.style.maxWidth = Math.max(120, Math.min(320, railR.left - 16)) + 'px';
+    tip.classList.add('show');
+    const th = tip.offsetHeight;
     let top = r.top + r.height / 2 - th / 2;
     top = Math.max(8, Math.min(window.innerHeight - th - 8, top));
-    tip.style.left = left + 'px';
     tip.style.top = top + 'px';
   }
   function hideTip() { if (tip) tip.classList.remove('show'); }
