@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT 问题导航栏",
+  "name": "问题导航栏（ChatGPT / Claude）",
   "short_name": "问题导航",
-  "version": "1.1.0",
-  "description": "在 ChatGPT 网页右侧显示当前对话的问题导航短横线，悬停预览、点击跳转。完全本地运行，不联网、不收集数据。",
+  "version": "1.2.0",
+  "description": "在 ChatGPT 和 Claude 网页右侧显示当前对话的问题导航短横线，悬停预览、点击跳转。完全本地运行，不联网、不收集数据。",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -17,7 +17,8 @@
     {
       "matches": [
         "https://chatgpt.com/*",
-        "https://chat.openai.com/*"
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
       ],
       "js": [
         "bridge.js"
@@ -29,7 +30,8 @@
     {
       "matches": [
         "https://chatgpt.com/*",
-        "https://chat.openai.com/*"
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
       ],
       "js": [
         "content.js"
@@ -39,7 +41,7 @@
     }
   ],
   "action": {
-    "default_title": "ChatGPT 问题导航栏 - 状态与诊断",
+    "default_title": "问题导航栏 - 状态与诊断",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

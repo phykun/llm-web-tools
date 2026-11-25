@@ -9,9 +9,18 @@
   window.__cgnavLoaded = true;
 
   const VERSION = (() => { try { return chrome.runtime.getManifest().version; } catch { return '?'; } })();
-  const TAG = '[ChatGPT问题导航]';
+  const TAG = '[问题导航栏]';
+
+  // ---------------------------------------------------------------- 站点配置
+  const IS_CLAUDE = /(^|\.)claude\.ai$/.test(location.hostname);
+  const SITE = IS_CLAUDE
+    ? { name: 'Claude', convRe: /\/chat\/([\w-]+)/, turnAttr: 'data-turn-key' }
+    : { name: 'ChatGPT', convRe: /\/c\/([\w-]+)/, turnAttr: 'data-content-search-turn-key' };
+  const convIdOf = (path) => { const m = SITE.convRe.exec(path); return m ? m[1] : null; };
   const MIN_ITEMS_TO_SHOW = 2;     // 至少多少个问题才显示导航栏
-  const MIN_CONTAINER_WIDTH = 700; // 聊天区域窄于此宽度时隐藏，避免遮挡正文
+  const MIN_CONTAINER_WIDTH = 700; // 量不到正文栏时的退路：聊天区域窄于此宽度时隐藏
+  const RAIL_WIDTH = 34;           // 导航栏宽度（含内边距）
+  const RAIL_RIGHT_GAP = 14;       // 导航栏与聊天区右边缘的距离
   let debug = false;
 
   const log = (...a) => { if (debug) console.log(TAG, ...a); };
@@ -49,6 +58,12 @@
   // 多级兜底：ChatGPT 改版时某一级失效，后面的还能接住。
   const STRATEGIES = [
     {
+      // claude.ai（2026-11-25 实测）
+      name: 'Claude 界面 data-testid=user-message',
+      find: (root) => (IS_CLAUDE ? Array.from(root.querySelectorAll('[data-testid="user-message"]'))
+        .map((u) => u.closest('[data-turn-key]') || u) : []),
+    },
+    {
       // 2026 年 11 月起的新版界面（已在真实页面确认）
       name: '新版界面 data-user-message-bubble',
       find: (root) => Array.from(root.querySelectorAll('[data-user-message-bubble="true"]'))
@@ -74,10 +89,19 @@
   // 当前对话的滚动区域。ChatGPT 切换对话后会把上一个对话隐藏保留在页面中，
   // 所以要选"可见且与网址中的对话 ID 一致"的那一个，所有识别都限定在它内部。
   function activeThreadScroll() {
+    if (IS_CLAUDE) {
+      const lists = Array.from(document.querySelectorAll('[data-testid="transcript-list"]'));
+      const list = lists.find((l) => l.getBoundingClientRect().width > 0);
+      if (!list) return null;
+      for (let e = list.parentElement; e && e !== document.documentElement; e = e.parentElement) {
+        if (/(auto|scroll|overlay)/.test(getComputedStyle(e).overflowY)) return e;
+      }
+      return null;
+    }
     const all = Array.from(document.querySelectorAll('.thread-scroll-container'));
     if (!all.length) return null;
     const vis = all.filter((e) => e.getBoundingClientRect().width > 0);
-    const m = /\/c\/([\w-]+)/.exec(location.pathname);
+    const m = SITE.convRe.exec(location.pathname);
     if (m) {
       const hit = vis.find((e) => e.querySelector(`[data-chatgpt-conversation-selection-target="${CSS.escape(m[1])}"]`));
       if (hit) return hit;
@@ -121,8 +145,8 @@
   }
 
   function getMessageId(el) {
-    const turnKeyEl = el.closest('[data-content-search-turn-key]');
-    if (turnKeyEl) return 'k:' + turnKeyEl.getAttribute('data-content-search-turn-key');
+    const turnKeyEl = el.closest(`[${SITE.turnAttr}]`);
+    if (turnKeyEl) return 'k:' + turnKeyEl.getAttribute(SITE.turnAttr);
     const own = el.getAttribute('data-message-id');
     if (own) return 'm:' + own;
     const inner = el.querySelector('[data-message-id]');
@@ -135,7 +159,7 @@
   }
 
   function getText(el) {
-    const node = el.querySelector('[data-user-message-bubble="true"]') || el.querySelector('.whitespace-pre-wrap') || el;
+    const node = el.querySelector('[data-user-message-bubble="true"], [data-testid="user-message"]') || el.querySelector('.whitespace-pre-wrap') || el;
     let text = (node.textContent || '').replace(/\s+/g, ' ').trim();
     text = text.replace(/^(you said|你说|您说)\s*[:：]\s*/i, '');
     if (!text) {
@@ -260,7 +284,7 @@
     const c = state.container;
     const ct = containerRect(c).top;
     let cover = 0;
-    for (const h of document.querySelectorAll('#page-header, header')) {
+    for (const h of document.querySelectorAll('#page-header, header, [data-testid="chat-header"]')) {
       // 滚动区域内部的 header 多是正文里的标题（新版界面），只认旧版界面的 #page-header
       if (c && c !== document.scrollingElement && c.contains(h) && h.id !== 'page-header') continue;
       if (h.closest('#cgnav-host, nav, aside')) continue;
@@ -398,8 +422,10 @@
     if (!host) return;
     const cl = document.documentElement.classList;
     const dt = document.documentElement.getAttribute('data-theme');
+    const dm = document.documentElement.getAttribute('data-mode'); // claude.ai
     let dark;
-    if (dt === 'dark' || dt === 'light') dark = dt === 'dark';
+    if (dm === 'dark' || dm === 'light') dark = dm === 'dark';
+    else if (dt === 'dark' || dt === 'light') dark = dt === 'dark';
     else if (cl.contains('dark')) dark = true;
     else if (cl.contains('light')) dark = false;
     else dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -464,6 +490,29 @@
     updateActive(false);
   }
 
+  // 正文栏的右边缘（屏幕坐标），量不到时返回 null
+  function contentColumnRight() {
+    const root = getRoot();
+    let col = null;
+    if (IS_CLAUDE) col = root.querySelector('[data-testid="transcript-list"]');
+    else col = root.querySelector('[data-thread-user-message-navigation-content]');
+    if (col) {
+      const r = col.getBoundingClientRect();
+      // 扣除内边距，得到文字实际的右边缘（ChatGPT 的正文栏有 20px 右内边距，2026-11-25 实测）
+      if (r.width > 0) return r.right - (parseFloat(getComputedStyle(col).paddingRight) || 0);
+    }
+    // 退路：用已渲染消息的右边缘；占满整个聊天区宽度的块元素量不出正文宽度，忽略
+    const cw = containerRect(state.container).width;
+    let max = null;
+    for (const it of state.items) {
+      if (it.el && it.el.isConnected) {
+        const r = it.el.getBoundingClientRect();
+        if (r.width > 0 && r.width < cw * 0.9) max = Math.max(max == null ? -Infinity : max, r.right);
+      }
+    }
+    return max;
+  }
+
   function updateLayout() {
     if (!rail) return;
     const c = getContainer();
@@ -472,11 +521,18 @@
     let reason = '';
     if (!state.enabled) reason = '已在扩展弹窗中关闭';
     else if (n < MIN_ITEMS_TO_SHOW) reason = n ? `问题少于 ${MIN_ITEMS_TO_SHOW} 个` : '未识别到问题';
-    else if (rect.width < MIN_CONTAINER_WIDTH) reason = `聊天区域过窄（${Math.round(rect.width)}px）`;
+    else {
+      // 正文栏右边缘与导航栏之间要留出空隙，否则隐藏，避免遮挡正文
+      const contentRight = contentColumnRight();
+      const railLeft = rect.right - RAIL_RIGHT_GAP - RAIL_WIDTH;
+      if (contentRight != null) {
+        if (contentRight + 4 > railLeft) reason = `正文右侧空间不足（${Math.max(0, Math.round(railLeft - contentRight))}px）`;
+      } else if (rect.width < MIN_CONTAINER_WIDTH) reason = `聊天区域过窄（${Math.round(rect.width)}px）`;
+    }
     state.hiddenReason = reason;
 
     // 诊断提示点：在对话页面停留一段时间仍未识别到任何问题
-    const isConv = /\/c\/[\w-]+/.test(location.pathname);
+    const isConv = !!convIdOf(location.pathname);
     const showWarn = state.enabled && isConv && state.domCount === 0 && state.items.length === 0 &&
                      Date.now() - state.convChangedAt > 6000;
     warnEl.classList.toggle('show', showWarn);
@@ -487,7 +543,7 @@
     const avail = Math.max(120, window.innerHeight - 220 - 16 - (moreVisible() ? 20 : 0));
     const tickH = Math.max(4, Math.min(14, Math.floor(avail / n)));
     rail.style.setProperty('--tick-h', tickH + 'px');
-    rail.style.right = Math.max(4, window.innerWidth - rect.right + 14) + 'px';
+    rail.style.right = Math.max(4, window.innerWidth - rect.right + RAIL_RIGHT_GAP) + 'px';
     rail.classList.add('show');
   }
 
@@ -553,6 +609,7 @@
   }
 
   function userUnitOfTurn(turnEl) {
+    if (IS_CLAUDE) return turnEl;
     const b = turnEl.querySelector('[data-user-message-bubble="true"]');
     return b ? (b.closest('[data-chatgpt-search-unit-key], [data-content-search-unit-key]') || b) : turnEl;
   }
@@ -560,7 +617,7 @@
   function resolveEl(item) {
     if (item.el && item.el.isConnected) return item.el;
     if (item.id.startsWith('k:')) {
-      const t = getRoot().querySelector(`[data-content-search-turn-key="${CSS.escape(item.id.slice(2))}"]`);
+      const t = getRoot().querySelector(`[${SITE.turnAttr}="${CSS.escape(item.id.slice(2))}"]`);
       item.el = t ? userUnitOfTurn(t) : null;
       return item.el;
     }
@@ -681,12 +738,44 @@
     }
   }
 
+  let cmdReply = null;
+  document.addEventListener('cgnav:cmdres', (e) => { if (typeof e.detail === 'string') cmdReply = e.detail; });
+  function bridgeCmd(cmd) {
+    cmdReply = null;
+    document.dispatchEvent(new CustomEvent('cgnav:cmd', { detail: JSON.stringify(cmd) }));
+    if (!cmdReply) return { ok: false, reason: '桥接脚本未响应' };
+    try { return JSON.parse(cmdReply); } catch { return { ok: false, reason: '桥接数据无法解析' }; }
+  }
+
+  // Claude：页面自带的 scrollToIndex 会把目标行对齐到顶部栏下方（实测稳定），这里只做确认和最多两次重试
+  async function claudeJump(item) {
+    const c = getContainer();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      scanNow(); // 同步最新的行号
+      const r = bridgeCmd({ op: 'scrollToIndex', index: item.index, id: item.id.slice(2) });
+      if (!r.ok) { recordError('claudeJump', new Error(r.reason || '跳转失败')); return null; }
+      await sleep(attempt ? 600 : 400);
+      refreshEls();
+      const el = resolveEl(item);
+      if (el && c) {
+        const top = el.getBoundingClientRect().top - containerRect(c).top;
+        if (top > -20 && top < 260) return el;
+      }
+    }
+    return resolveEl(item);
+  }
+
   async function jumpTo(item) {
     if (state.busy) return;
     state.lockActiveUntil = Date.now() + 4000;
     setActive(item.id);
     let el = null;
-    if (typeof item.top === 'number') {
+    if (IS_CLAUDE && Number.isInteger(item.index)) {
+      // Claude：调用页面自带的"滚动到第 N 行"，再确认位置
+      state.busy = true;
+      try { el = await claudeJump(item); } catch (e) { recordError('claudeJump', e); } finally { state.busy = false; }
+      if (!el) el = await searchFor(item);
+    } else if (typeof item.top === 'number') {
       // 新版虚拟列表：用页面自己的位置数据定位，并循环校正
       state.busy = true;
       try { el = await settleTo(item); } catch (e) { recordError('settleTo', e); } finally { state.busy = false; }
@@ -853,8 +942,9 @@
   function refreshEls() {
     if (!state.items.some((it) => it.id.startsWith('k:'))) return;
     const map = new Map();
-    for (const t of getRoot().querySelectorAll('[data-content-search-turn-key]')) {
-      map.set('k:' + t.getAttribute('data-content-search-turn-key'), t);
+    for (const t of getRoot().querySelectorAll(`[${SITE.turnAttr}]`)) {
+      const k = 'k:' + t.getAttribute(SITE.turnAttr);
+      if (!map.has(k)) map.set(k, t);
     }
     for (const it of state.items) {
       const t = map.get(it.id);
@@ -872,13 +962,13 @@
     bridgeInfo.hasGeometry = !!(r && r.hasGeometry);
     if (!r || !r.ok || !Array.isArray(r.rows) || !r.rows.length) return false;
     // 防止对话切换瞬间读到上一个对话的数据
-    const m = /\/c\/([\w-]+)/.exec(location.pathname);
-    if (m && r.conv && r.conv !== m[1]) { bridgeInfo.reason = '列表数据与当前对话不一致，等待刷新'; return false; }
+    const cid = convIdOf(location.pathname);
+    if (cid && r.conv && r.conv !== cid) { bridgeInfo.reason = '列表数据与当前对话不一致，等待刷新'; return false; }
     const next = r.rows.map((row) => {
       const id = 'k:' + row.id;
       const old = state.byId.get(id);
-      if (old) { old.text = row.text; old.top = row.top; return old; }
-      return { id, text: row.text, el: null, turn: null, top: row.top };
+      if (old) { old.text = row.text; old.top = row.top; old.index = row.index; return old; }
+      return { id, text: row.text, el: null, turn: null, top: row.top, index: row.index };
     });
     // 记录已加载的回合数，用于判断"加载更早"是否还有新内容
     state.loadedRows = r.totalRows || next.length;
@@ -886,7 +976,7 @@
     state.byId = new Map(next.map((it) => [it.id, it]));
     refreshEls();
     state.strategy = '页面列表数据（完整列表）';
-    state.domCount = getRoot().querySelectorAll('[data-user-message-bubble="true"]').length;
+    state.domCount = getRoot().querySelectorAll('[data-user-message-bubble="true"], [data-testid="user-message"]').length;
     return true;
   }
 
@@ -924,7 +1014,7 @@
     const key = conversationKey();
     if (key === state.convKey) return false;
     log('对话切换', state.convKey, '→', key);
-    const wasNewChat = state.convKey != null && !/\/c\//.test(state.convKey) && /\/c\//.test(key);
+    const wasNewChat = state.convKey != null && !convIdOf(state.convKey) && !!convIdOf(key);
     state.convKey = key;
     state.convChangedAt = Date.now();
     state.olderExhausted = false;
@@ -971,7 +1061,7 @@
       }
     }).observe(document.body, { childList: true, subtree: true });
 
-    new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme'] });
+    new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-mode'] });
     try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme); } catch { /* ignore */ }
 
     document.addEventListener('scroll', onScroll, { capture: true, passive: true });
@@ -998,7 +1088,8 @@
     return {
       version: VERSION,
       enabled: state.enabled,
-      pageType: /\/c\/[\w-]+/.test(location.pathname) ? '对话页' : (location.pathname === '/' ? '新对话/首页' : '其他页面'),
+      site: SITE.name,
+      pageType: convIdOf(location.pathname) ? '对话页' : (location.pathname === '/' || location.pathname === '/new' ? '新对话/首页' : '其他页面'),
       host: location.host,
       strategy: state.strategy || '无（所有识别规则都未命中）',
       domQuestions: state.domCount,
@@ -1021,7 +1112,10 @@
         main: !!document.querySelector('main'),
         userBubbles: getRoot().querySelectorAll('[data-user-message-bubble="true"]').length,
         threadScrollContainers: document.querySelectorAll('.thread-scroll-container').length,
-        turnKeys: document.querySelectorAll('[data-content-search-turn-key]').length,
+        turnKeys: document.querySelectorAll(`[${SITE.turnAttr}]`).length,
+        claudeTranscriptLists: document.querySelectorAll('[data-testid="transcript-list"]').length,
+        claudeUserMessages: document.querySelectorAll('[data-testid="user-message"]').length,
+        htmlMode: document.documentElement.getAttribute('data-mode'),
         virtualizedTurns: document.querySelectorAll('[data-virtualized-turn]').length,
         threadScroll: !!document.querySelector('.thread-scroll-container'),
         htmlTheme: document.documentElement.getAttribute('data-theme'),

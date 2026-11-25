@@ -1,5 +1,5 @@
 /*
- * ChatGPT 问题导航栏 - 页面桥接脚本（运行在页面主环境 MAIN world）
+ * 问题导航栏 - 页面桥接脚本（运行在页面主环境 MAIN world），支持 ChatGPT 与 Claude
  *
  * 新版 ChatGPT（2026-11 实测）：
  *   1. 对话列表是虚拟列表，只渲染视口附近的几个回合；
@@ -9,7 +9,8 @@
  *   - 已加载回合的 ID、用户问题文字（截断到 400 字）、在列表中的位置；
  *   - 是否可能还有更早的回合尚未加载（用于显示"加载更早"标记）。
  *
- * - 只读，不修改页面数据，不调用页面函数；
+ * - 只读，不修改页面数据；唯一例外：在 Claude 上点击跳转时，调用页面自带的
+ *   scrollToIndex 把对话滚动到指定行（Claude 自己的"对话内查找"也用这个函数）；
  * - 不发起任何网络请求，不读取 Cookie、令牌、localStorage；
  * - 读不到（ChatGPT 改版）时返回 ok:false，内容脚本自动退回纯 DOM 识别。
  */
@@ -30,7 +31,7 @@
     for (let j = 0; h && typeof h === 'object' && 'next' in h && j < 120; j++, h = h.next) yield h.memoizedState;
   }
 
-  function collect() {
+  function collectChatGPT() {
     // ChatGPT 切换对话后会把上一个对话隐藏保留在页面中，必须选当前网址对应、且可见的那个列表
     const m = /\/c\/([\w-]+)/.exec(location.pathname);
     const urlConv = m ? m[1] : null;
@@ -105,6 +106,89 @@
     }
     return text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + '…' : text;
   }
+
+
+  // ---------------------------------------------------------------- Claude（claude.ai，2026-11-25 实测）
+  // 对话列表组件的 props.rows 中有：messageUuids（已加载消息，按顺序）、messageChainData（每行数据，
+  // lastMessage.sender 为 human / assistant，content[].text 为文字）、hasEarlier（是否还有更早的消息）。
+  function claudeListFiber() {
+    const lists = Array.from(document.querySelectorAll('[data-testid="transcript-list"]'));
+    const list = lists.find((l) => l.getBoundingClientRect().width > 0) || lists[0];
+    if (!list) return null;
+    let f = fiberOf(list);
+    for (let d = 0; f && d < 30; d++, f = f.return) {
+      const p = f.memoizedProps;
+      if (p && p.rows && Array.isArray(p.rows.messageUuids) && Array.isArray(p.rows.messageChainData)) return f;
+    }
+    return null;
+  }
+
+  function claudeText(m) {
+    let text = Array.isArray(m.content)
+      ? m.content.filter((x) => x && x.type === 'text' && typeof x.text === 'string').map((x) => x.text).join(' ')
+      : (typeof m.text === 'string' ? m.text : '');
+    text = text.replace(/\s+/g, ' ').trim();
+    if (!text) {
+      const files = (Array.isArray(m.files_v2) && m.files_v2.length) || (Array.isArray(m.attachments) && m.attachments.length) || (Array.isArray(m.files) && m.files.length);
+      text = files ? '[附件]' : '[空消息]';
+    }
+    return text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + '…' : text;
+  }
+
+  function collectClaude() {
+    const lf = claudeListFiber();
+    if (!lf) return { ok: false, reason: document.querySelector('[data-testid="transcript-list"]') ? '未找到对话列表数据' : '页面中没有对话列表' };
+    const props = lf.memoizedProps;
+    const r = props.rows;
+    const rows = [];
+    r.messageChainData.forEach((c, i) => {
+      if (!c) return;
+      const m = c.displayMessage || c.lastMessage || (c.chain && Array.isArray(c.chain.messages) ? c.chain.messages[0] : null);
+      if (!m || m.sender !== 'human') return;
+      const id = (c.chain && typeof c.chain.rowKey === 'string') ? c.chain.rowKey : m.uuid;
+      if (typeof id !== 'string') return;
+      rows.push({ id, index: i, text: claudeText(m), top: null });
+    });
+    return {
+      ok: true, site: 'claude',
+      conv: typeof props.conversationUuid === 'string' ? props.conversationUuid : null,
+      totalRows: r.messageUuids.length, hasOlder: !!r.hasEarlier, hasGeometry: false, rows,
+    };
+  }
+
+  // 页面自带的"滚动到第 N 行"函数（Claude 的对话内查找功能也用它）
+  function claudeJumpApi() {
+    const lf = claudeListFiber();
+    if (!lf) return null;
+    let api = null, n = 0;
+    (function walk(f) {
+      if (!f || api || n++ > 30000) return;
+      const p = f.memoizedProps;
+      if (p && typeof p === 'object' && typeof p.scrollToIndex === 'function' && Array.isArray(p.items)) { api = p; return; }
+      walk(f.child); walk(f.sibling);
+    })(lf.child);
+    return api;
+  }
+
+  const IS_CLAUDE = /(^|\.)claude\.ai$/.test(location.hostname);
+  function collect() { return IS_CLAUDE ? collectClaude() : collectChatGPT(); }
+
+  // 唯一的"写"操作：在 Claude 上调用页面自带的 scrollToIndex 滚动到指定行（只滚动，不改数据）
+  document.addEventListener('cgnav:cmd', (e) => {
+    let out = { ok: false, reason: '不支持' };
+    try {
+      const cmd = typeof e.detail === 'string' ? JSON.parse(e.detail) : null;
+      if (IS_CLAUDE && cmd && cmd.op === 'scrollToIndex' && Number.isInteger(cmd.index)) {
+        const api = claudeJumpApi();
+        const item = api && api.items[cmd.index];
+        const key = item && item.chain && item.chain.rowKey;
+        if (!api) out = { ok: false, reason: '未找到页面的跳转函数' };
+        else if (cmd.id && key !== cmd.id) out = { ok: false, reason: '行号与消息不一致' };
+        else { api.scrollToIndex(cmd.index, { align: 'start' }); out = { ok: true }; }
+      }
+    } catch (err) { out = { ok: false, reason: String(err && err.message ? err.message : err) }; }
+    document.dispatchEvent(new CustomEvent('cgnav:cmdres', { detail: JSON.stringify(out) }));
+  });
 
   document.addEventListener('cgnav:req', () => {
     let out;

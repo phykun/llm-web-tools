@@ -13,6 +13,7 @@ function setBadge(text, cls) {
 
 function renderInfo(d) {
   const rows = [
+    ['网站', d.site || '—'],
     ['页面', d.pageType],
     ['识别规则', d.strategy],
     ['完整列表读取', d.bridge ? (d.bridge.ok ? `可用（已加载 ${d.bridge.totalRows} 个回合）` : `不可用：${d.bridge.reason || '未知'}（已退回页面识别）`) : '—'],
@@ -35,7 +36,7 @@ function judge(d) {
   if (!d.enabled) return setBadge('已关闭', 'warn');
   if (d.errors && d.errors.length) return setBadge('运行中，但出现过错误', 'warn');
   if (d.railVisible) return setBadge('正常运行', 'ok');
-  if (d.pageType === '对话页' && d.domQuestions === 0) return setBadge('未识别到消息（ChatGPT 页面结构可能已变化）', 'bad');
+  if (d.pageType === '对话页' && d.domQuestions === 0) return setBadge('未识别到消息（网站页面结构可能已变化）', 'bad');
   return setBadge('运行中（当前无需显示）', 'ok');
 }
 
@@ -51,7 +52,7 @@ function send(type) {
 
 function show(resp) {
   if (!resp || resp.error) {
-    setBadge('当前标签页不是 ChatGPT，或页面需要刷新', 'bad');
+    setBadge('当前标签页不是 ChatGPT / Claude，或页面需要刷新', 'bad');
     $('info').replaceChildren();
     ['rescan', 'preload'].forEach((id) => ($(id).disabled = true));
     lastDiag = { error: resp ? resp.error : 'no response', version: chrome.runtime.getManifest().version };
